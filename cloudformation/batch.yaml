@@ -1,0 +1,298 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+    CloudFormation Stack to build a AWS Batch Environment, Job Definition, and Queue
+    Last Modified: 26th November 2017
+    Author: Justin Plute <rplute@gmail.com>
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Environmental Settings
+        Parameters:
+          - Environment
+      - Label:
+          default: EC2 Configurations
+        Parameters:
+          - Subnets
+          - CIDR
+          - VpcID
+      - Label:
+          default: AWS Docker Parameters
+        Parameters:
+          - DockerImage
+
+Parameters:
+  Environment:
+    Description: The name of the AWS environment
+    Type: String
+    Default: dev
+  DockerImage:
+    Description: The name of the Docker image in AWS ECR
+    Type: String
+    Default: my-batch-job
+  CIDR:
+    Description: Allow inbound traffic to the cluster from this CIDR range
+    Type: String
+    Default: 10.0.0.0/8
+    MinLength: '9'
+    MaxLength: '18'
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid CIDR range of the form x.x.x.x/x.
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets for Autoscaling Group. Please select at least 2.
+    Default: "subnet-d99302be,subnet-eede75a7"
+  VpcID:
+    Type: AWS::EC2::VPC::Id
+    Description: The vpc within which to place EC2 AutoScaling Group
+    Default: vpc-5d0b733a
+
+Resources:
+  # S3 BUCKET FOR EVENT NOTIFICATIONS
+  S3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      AccessControl: "Private"
+      BucketName: !Sub "batch-${AWS::AccountId}-${AWS::Region}"
+      NotificationConfiguration:
+        LambdaConfigurations:
+          -
+            Function: !Ref LambdaFunction
+            Event: "s3:ObjectCreated:*"
+            Filter:
+              S3Key:
+                Rules:
+                  -
+                    Name: "prefix"
+                    Value: "uploads"
+
+  # AWS LAMBDA TRIGGER FUNCTION
+  LambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Description: "A Lambda function that triggers AWS Batch for S3 processing"
+      Handler: "index.handler"
+      Runtime: "nodejs6.10"
+      Timeout: "30"
+      Role: !GetAtt LambdaRole.Arn
+      enviroment:
+        JOB_DEFINITION: !Ref Job
+        JOB_NAME: !Sub "${Environment}-batch-s3-processor"
+        JOB_QUEUE: "HighPriority"
+      Code:
+        ZipFile: !Sub |
+          const AWS = require('aws-sdk');
+          const batch = new AWS.Batch({apiVersion: '2016-08-10'});
+
+          exports.handler = function(event, context, callback) {
+
+            console.log('s3 object', event.Records[0].s3);
+
+            const params = {
+              jobDefinition: process.env.JOB_DEFINITION,
+              jobName: process.env.JOB_NAME,
+              jobQueue: process.env.JOB_QUEUE,
+              containerOverrides: {
+                environment: [
+                  {
+                    name: 'MY_BUCKET',
+                    value: event.Records[0].s3.bucket.name
+                  },
+                  {
+                    name: 'MY_KEY',
+                    value: event.Records[0].s3.object.key
+                  }
+                ]
+              }
+            };
+
+            batch.submitJob(params, function(err, data) {
+              if (err) {
+                console.log(err, err.stack);
+                return callback(err);
+              } else {
+                console.log(data);
+                return callback();
+              }
+            })
+          }
+
+  LambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Principal:
+            Service:
+            - "lambda.amazonaws.com"
+          Action:
+          - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+      - PolicyName: !Sub "${Environment}-aws-batch-access"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+              - "batch:*"
+              Resource: "*"
+      Path: "/"
+
+  # AWS ECR Repo for our AWS Batch Job
+  Repo:
+    Type: "AWS::ECR::Repository"
+    Properties:
+      RepositoryName: !Ref DockerImage
+
+  # AWS BATCH TO DO THE PROCESSING
+  ComputeEnvironment:
+    Type: "AWS::Batch::ComputeEnvironment"
+    Properties:
+      Type: MANAGED
+      ServiceRole: !Sub "arn:aws:iam::${AWS::AccountId}:role/service-role/AWSBatchServiceRole"
+      ComputeEnvironmentName: !Sub "${Environment}-batch-processing"
+      ComputeResources:
+        MaxvCpus: 12
+        SecurityGroupIds:
+          - !Ref SecurityGroup
+        Type: EC2
+        Subnets: !Ref Subnets
+        MinvCpus: 0
+        InstanceRole: !Ref ECSInstanceProfile
+        InstanceTypes:
+          - m3.medium
+          - m3.large
+          - m3.xlarge
+          - m4.large
+          - m4.xlarge
+        Tags: {"Name": !Sub "${Environment} - Batch Instance" }
+        DesiredvCpus: 2
+      State: ENABLED
+
+  JobQueue:
+    DependsOn: ComputeEnvironment
+    Type: "AWS::Batch::JobQueue"
+    Properties:
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Sub "${Environment}-batch-environment"
+      State: ENABLED
+      Priority: 1
+      JobQueueName: "HighPriority"
+
+  Job:
+    Type: "AWS::Batch::JobDefinition"
+    Properties:
+      Type: container
+      JobDefinitionName: !Sub "${Environment}-batch-s3-processor"
+      ContainerProperties:
+        Memory: 1024
+        Privileged: false
+        JobRoleArn: !Ref JobRole
+        ReadonlyRootFilesystem: true
+        Vcpus: 1
+        Image: !Sub "${AWS::AccountId}.dkr.ecr.us-west-2.amazonaws.com/${DockerImage}"
+      RetryStrategy:
+        Attempts: 0
+
+  JobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Environment}-BatchJobRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Action: "sts:AssumeRole"
+            Effect: "Allow"
+            Principal:
+              Service: "ecs-tasks.amazonaws.com"
+      Policies:
+        - PolicyName: !Sub ${Environment}-s3-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "s3:*"
+                Resource: !Sub "arn:aws:s3:batch-${AWS::AccountId}-${AWS::Region}/uploads/*"
+
+  ECSInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref ECSRole
+
+  ECSRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      RoleName: !Sub "${Environment}-batch-ecs-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Action: "sts:AssumeRole"
+            Effect: "Allow"
+            Principal:
+              Service: "ec2.amazonaws.com"
+      Policies:
+        -
+          PolicyName: !Sub ${Environment}-ecs-batch-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "ecs:CreateCluster"
+                  - "ecs:DeregisterContainerInstance"
+                  - "ecs:DiscoverPollEndpoint"
+                  - "ecs:Poll"
+                  - "ecs:RegisterContainerInstance"
+                  - "ecs:StartTelemetrySession"
+                  - "ecs:StartTask"
+                  - "ecs:Submit*"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                  - "logs:DescribeLogStreams"
+                  - "logs:CreateLogGroup"
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:BatchGetImage"
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:GetAuthorizationToken"
+                Resource: "*"
+        - PolicyName: !Sub "${Environment}-ecs-instance-policy"
+          PolicyDocument:
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "ecs:DescribeContainerInstances"
+                  - "ecs:ListClusters"
+                  - "ecs:RegisterTaskDefinition"
+                Resource: "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "ecs:*"
+                Resource: "*"
+
+  SecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      VpcId: !Ref VpcID
+      GroupDescription: "Inbound security group for SSH on Batch EC2 instance"
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: "22"
+          ToPort: "22"
+          CidrIp: !Ref CIDR
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${Environment}-batch-sg"
