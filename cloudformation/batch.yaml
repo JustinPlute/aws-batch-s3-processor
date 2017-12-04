@@ -2,7 +2,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
     CloudFormation Stack to build a AWS Batch Environment, Job Definition, and Queue
-    Last Modified: 26th November 2017
+    Last Modified: 3rd December 2017
     Author: Justin Plute <rplute@gmail.com>
 
 Metadata:
@@ -143,7 +143,6 @@ Resources:
             - "lambda.amazonaws.com"
           Action:
           - "sts:AssumeRole"
-      Path: "/"
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
