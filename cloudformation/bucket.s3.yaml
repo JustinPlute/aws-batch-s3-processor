@@ -1,0 +1,104 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+    CloudFormation Stack to provision S3 bucket
+    Last Modified: 26th November 2017
+    Author: Justin Plute <rplute@gmail.com>
+
+Parameters:
+  Environment:
+    Description: The name of the AWS environment
+    Type: String
+    Default: dev
+
+Resources:
+  # S3 BUCKET FOR EVENT NOTIFICATIONS
+  S3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      AccessControl: "Private"
+      BucketName: !Sub "batch-${AWS::AccountId}-${AWS::Region}"
+
+   # Lambda ucket Permission
+  BucketPermission:
+    DependsOn: S3Bucket
+    Type: "AWS::Lambda::Permission"
+    Properties:
+        Action: "lambda:invokeFunction"
+        FunctionName: !Ref LambdaFunction
+        Principal: "s3.amazonaws.com"
+        SourceAccount: !Ref "AWS::AccountId"
+        SourceArn: !Sub "arn:aws:s3:::${S3Bucket}"
+
+  # AWS LAMBDA TRIGGER FUNCTION
+  LambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Description: "A Lambda function that triggers AWS Batch for S3 processing"
+      Handler: "index.handler"
+      Runtime: "nodejs6.10"
+      Timeout: "30"
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          const AWS = require('aws-sdk');
+          const batch = new AWS.Batch({apiVersion: '2016-08-10'});
+
+          exports.handler = function(event, context, callback) {
+
+            console.log('s3 object', event.Records[0].s3);
+
+            const params = {
+              jobDefinition: process.env.JOB_DEFINITION,
+              jobName: process.env.JOB_NAME,
+              jobQueue: process.env.JOB_QUEUE,
+              containerOverrides: {
+                environment: [
+                  {
+                    name: 'MY_BUCKET',
+                    value: event.Records[0].s3.bucket.name
+                  },
+                  {
+                    name: 'MY_KEY',
+                    value: event.Records[0].s3.object.key
+                  }
+                ]
+              }
+            };
+
+            batch.submitJob(params, function(err, data) {
+              if (err) {
+                console.log(err, err.stack);
+                return callback(err);
+              } else {
+                console.log(data);
+                return callback();
+              }
+            })
+          }
+
+  LambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Principal:
+            Service:
+            - "lambda.amazonaws.com"
+          Action:
+          - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: !Sub "${Environment}-aws-batch-access"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+              - "batch:*"
+              Resource: "*"
+      Path: "/"

@@ -59,7 +59,7 @@ Resources:
       NotificationConfiguration:
         LambdaConfigurations:
           -
-            Function: !Ref LambdaFunction
+            Function: !GetAtt LambdaFunction.Arn
             Event: "s3:ObjectCreated:*"
             Filter:
               S3Key:
@@ -67,6 +67,17 @@ Resources:
                   -
                     Name: "prefix"
                     Value: "uploads"
+
+  # Lambda ucket Permission
+  BucketPermission:
+    DependsOn: S3Bucket
+    Type: "AWS::Lambda::Permission"
+    Properties:
+        Action: "lambda:invokeFunction"
+        FunctionName: !Ref LambdaFunction
+        Principal: "s3.amazonaws.com"
+        SourceAccount: !Ref "AWS::AccountId"
+        SourceArn: !Sub "arn:aws:s3:::${S3Bucket}"
 
   # AWS LAMBDA TRIGGER FUNCTION
   LambdaFunction:
@@ -77,10 +88,11 @@ Resources:
       Runtime: "nodejs6.10"
       Timeout: "30"
       Role: !GetAtt LambdaRole.Arn
-      enviroment:
-        JOB_DEFINITION: !Ref Job
-        JOB_NAME: !Sub "${Environment}-batch-s3-processor"
-        JOB_QUEUE: "HighPriority"
+      Environment:
+        Variables:
+          JOB_DEFINITION: !Ref Job
+          JOB_NAME: !Sub "${Environment}-batch-s3-processor"
+          JOB_QUEUE: "HighPriority"
       Code:
         ZipFile: !Sub |
           const AWS = require('aws-sdk');
@@ -132,6 +144,8 @@ Resources:
           Action:
           - "sts:AssumeRole"
       Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
       - PolicyName: !Sub "${Environment}-aws-batch-access"
         PolicyDocument:
@@ -180,7 +194,7 @@ Resources:
     Properties:
       ComputeEnvironmentOrder:
         - Order: 1
-          ComputeEnvironment: !Sub "${Environment}-batch-environment"
+          ComputeEnvironment: !Ref ComputeEnvironment
       State: ENABLED
       Priority: 1
       JobQueueName: "HighPriority"
@@ -198,12 +212,13 @@ Resources:
         Vcpus: 1
         Image: !Sub "${AWS::AccountId}.dkr.ecr.us-west-2.amazonaws.com/${DockerImage}"
       RetryStrategy:
-        Attempts: 0
+        Attempts: 1
 
   JobRole:
-    Type: AWS::IAM::Role
+    Type: "AWS::IAM::Role"
     Properties:
-      RoleName: !Sub ${Environment}-BatchJobRole
+      Path: "/"
+      RoleName: !Sub "${Environment}-BatchJobRole"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -213,13 +228,15 @@ Resources:
             Principal:
               Service: "ecs-tasks.amazonaws.com"
       Policies:
-        - PolicyName: !Sub ${Environment}-s3-access
+        -
+          PolicyName: !Sub "${Environment}-s3-access"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Effect: "Allow"
+              -
+                Effect: "Allow"
                 Action: "s3:*"
-                Resource: !Sub "arn:aws:s3:batch-${AWS::AccountId}-${AWS::Region}/uploads/*"
+                Resource: !Sub "arn:aws:s3:::batch-${AWS::AccountId}-${AWS::Region}/uploads/*"
 
   ECSInstanceProfile:
     Type: "AWS::IAM::InstanceProfile"
