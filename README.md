@@ -1,6 +1,6 @@
 # AWS Batch Job S3 Processor
 
-This repository is the source code for the following blog article, [AWS Batch to process S3 events](https://justinplute.com/aws-batch-to-process-s3-events/).
+This repository is the source code for the following blog article, [AWS Batch to process S3 events](https://medium.com/@justinplute/aws-batch-to-process-s3-events-388a77d0d9c2).
 
 The solution provided is for processing S3 events using AWS Batch as opposed to AWS Lambda if running work longer than 5 minutes. Currently, AWS Lambda has a limitation of only being able to run for a maximum of 5 minutes before timing out.
 
