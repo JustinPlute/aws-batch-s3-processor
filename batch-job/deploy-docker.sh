@@ -2,7 +2,7 @@
 
 ACCOUNT=123456789012 # REMEMBER TO REPLACE THE AWS ACCOUNT ID
 DOCKER_CONTAINER=my-batch-job
-REPO=${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com/${$DOCKER_CONTAINER}
+REPO=${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com/${DOCKER_CONTAINER}
 TAG=build-$(date -u "+%Y-%m-%d")
 
 echo "Building Docker Image..."
